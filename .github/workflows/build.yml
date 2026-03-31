@@ -3,7 +3,7 @@ name: Build
 on: push
 
 jobs:
-  # --- JOB DE ANDROID (PURO Y SIMPLE) ---
+  # --- ) ---
   android-build:
     runs-on: ubuntu-latest
     name: Android Build
