@@ -34,6 +34,6 @@ jobs:
 
     - name: init linux cross compile env
       run: |
-        sh build-workspace/auto-build.sh
+        sh build-workspace/auto-build.sh -android -aarch64
         mkdir -p artifact
       shell: bash
