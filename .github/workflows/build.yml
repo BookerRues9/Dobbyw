@@ -1,145 +1,114 @@
-name: Build
+name: Builder
 
-on: push
+on:
+  push:
+    branches:
+      - master
+
+env:
+  CMAKE_VERSION: 3.25.2
+  LLVM_VERSION: 15.0.6
+  NDK_VERSION: r25b
 
 jobs:
-  # --- ) ---
-  android-build:
+  delete_latest_release:
     runs-on: ubuntu-latest
-    name: Android Build
     steps:
-      - uses: actions/checkout@v3
+    - name: checkout master
+      uses: actions/checkout@master
 
-      - name: Setup Toolchain
-        run: |
-          chmod +x scripts/setup_linux_cross_compile.sh
-          ./scripts/setup_linux_cross_compile.sh
+    - name: delete latest release
+      uses: dev-drprasad/delete-tag-and-release@v0.2.1
+      with:
+        delete_release: true
+        tag_name: latest
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Android (All Archs)
-        run: |
-          export CMAKE_HOME=$HOME/opt/cmake-3.25.2
-          export LLVM_HOME=$HOME/opt/llvm-15.0.6
-          export ANDROID_NDK_HOME=$HOME/opt/ndk-r25b
-          
-          # Usamos el builder oficial de Dobby
-          python3 scripts/platform_builder.py --platform=android --arch=all \
-          --cmake_dir=$CMAKE_HOME --llvm_dir=$LLVM_HOME --android_ndk_dir=$ANDROID_NDK_HOME
-
-      - name: Collect Android artifacts
-        run: |
-          mkdir build_result
-          # Buscamos los .a (estáticos) y .so (dinámicos) generados
-          find build/android -name "*.a" -exec cp {} build_result/ \;
-          find build/android -name "*.so" -exec cp {} build_result/ \;
-
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v3.1.0
-        with:
-          name: Android
-          path: build_result
-
-  # --- TUS JOBS ORIGINALES ---
-  win-build:
-    runs-on: windows-latest
-    name: Windows Build
-    steps:
-      - uses: actions/checkout@v3
-      - name: setup-msbuild
-        uses: microsoft/setup-msbuild@v1.1
-      - name: Configure CMake
-        shell: cmd
-        run: |
-          cmake -DCMAKE_SYSTEM_PROCESSOR=amd64 -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_BUILD_TYPE=Release -DDynamicBinaryInstrument=OFF -DPlugin.SymbolResolver=OFF -A x64 -B build64
-          cmake -DCMAKE_SYSTEM_PROCESSOR=x86 -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_BUILD_TYPE=Release -DDynamicBinaryInstrument=OFF -DPlugin.SymbolResolver=OFF -A Win32 -B build32
-      - name: Build x86
-        run: msbuild -m -p:Configuration=Release -t:dobby build32/Dobby.sln
-      - name: Build x64
-        run: msbuild -m -p:Configuration=Release -t:dobby build64/Dobby.sln
-      - name: Collect artifacts
-        shell: cmd
-        run: |
-          mkdir build_result
-          copy "build32\Release\dobby.dll" "build_result\dobby_x86.dll"
-          copy "build64\Release\dobby.dll" "build_result\dobby_x64.dll"
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v3.1.0
-        with:
-          name: Windows
-          path: build_result
-
-  linux-build:
+  linux_and_android:
     runs-on: ubuntu-latest
-    name: Linux Build
+    needs: delete_latest_release
     steps:
-      - uses: actions/checkout@v3
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install gcc-multilib g++-multilib libc6-dev-i386
-      - name: Configure CMake
-        run: |
-          cmake -DCMAKE_SYSTEM_PROCESSOR=amd64 -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_BUILD_TYPE=Release -DDynamicBinaryInstrument=OFF -DPlugin.SymbolResolver=OFF -B build64
-          cmake -DCMAKE_SYSTEM_PROCESSOR=x86 -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_CXX_FLAGS="-m32" -DCMAKE_C_FLAGS="-m32" -DCMAKE_SHARED_LINKER_FLAGS="-m32" -DCMAKE_BUILD_TYPE=Release -DDynamicBinaryInstrument=OFF -DPlugin.SymbolResolver=OFF -B build86
-      - name: Build x64
-        run: cd build64 && make dobby
-      - name: Build x86
-        run: cd build86 && make dobby
-      - name: Collect artifacts
-        run: |
-          mkdir build_result
-          cp build64/libdobby.so build_result/libdobby_x64.so
-          cp build86/libdobby.so build_result/libdobby_x86.so
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v3.1.0
-        with:
-          name: Linux
-          path: build_result
+    - name: checkout master
+      uses: actions/checkout@master
 
-  macos-build:
+    - name: init linux cross compile env
+      run: |
+        sh scripts/setup_linux_cross_compile.sh
+        mkdir -p artifact
+      shell: bash
+
+    - name: compile android
+      run: |
+        python3 scripts/platform_builder.py --platform=android --arch=all --cmake_dir=$HOME/opt/cmake-$CMAKE_VERSION --llvm_dir=$HOME/opt/llvm-$LLVM_VERSION --android_ndk_dir=$HOME/opt/ndk-$NDK_VERSION
+        cp include/dobby.h build/android
+        tar -zcvf build/dobby-android-all.tar.gz build/android
+        cp build/dobby-android-all.tar.gz artifact/
+      shell: bash
+    
+    - name: compile linux
+      run: |
+       python3 scripts/platform_builder.py --platform=android --arch=all --cmake_dir=$HOME/opt/cmake-$CMAKE_VERSION --llvm_dir=$HOME/opt/llvm-$LLVM_VERSION
+        cp include/dobby.h build/linux
+        tar -zcvf build/dobby-linux-all.tar.gz build/linux
+        cp build/dobby-linux-all.tar.gz artifact/
+      shell: bash
+
+    - name: print output
+      run: |
+        ls -lha .
+
+    - name: update release
+      uses: ncipollo/release-action@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: latest
+        body: "a lightweight, multi-platform, multi-architecture exploit hook framework"
+        artifacts: "build/dobby-linux-all.tar.gz,build/dobby-android-all.tar.gz"
+        allowUpdates: true
+        replacesArtifacts: true
+
+  macos_and_iphoneos:
     runs-on: macos-latest
-    name: macOS Build
+    needs: delete_latest_release
     steps:
-      - uses: actions/checkout@v3
-      - name: Configure CMake
-        run: |
-          cmake -DCMAKE_SYSTEM_PROCESSOR=amd64 -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_BUILD_TYPE=Release -DDynamicBinaryInstrument=OFF -DPlugin.SymbolResolver=OFF -B build64
-      - name: Build x64
-        run: cd build64 && make dobby
-      - name: Collect artifacts
-        run: |
-          mkdir build_result
-          cp build64/libdobby.dylib build_result/libdobby_x64.dylib
-      - name: Upload a Build Artifact
-        uses: actions/upload-artifact@v3.1.0
-        with:
-          name: macOS
-          path: build_result
+    - name: checkout dev
+      uses: actions/checkout@master
 
-  collect:
-    runs-on: ubuntu-latest
-    name: Collect build
-    if: github.ref == 'refs/heads/master'
-    needs: [win-build, linux-build, macos-build, android-build]
-    steps:
-      - name: Download a Build Artifact
-        uses: actions/download-artifact@v3.0.0
+    - name: init macos compile env
+      run: |
+        sh scripts/setup_macos_cross_compile.sh
+        mkdir -p artifact
+      shell: bash
 
-      - name: ZIP versions
-        run: |
-          zip -r -j dobby-win.zip Windows/*.dll
-          zip -r -j dobby-linux.zip Linux/*.so
-          zip -r -j dobby-macos.zip macOS/*.dylib
-          zip -r -j dobby-android.zip Android/*
-      
-      - name: Automatic Releases
-        uses: marvinpinto/action-automatic-releases@latest
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "latest"
-          prerelease: true
-          title: "CI Build"
-          files: |
-            dobby-win.zip
-            dobby-linux.zip
-            dobby-macos.zip
-            dobby-android.zip
+    - name: compile macos
+      run: |
+        python3 scripts/platform_builder.py --platform=macos --arch=all --cmake_dir=$HOME/opt/cmake-$CMAKE_VERSION/CMake.app/Contents
+        cp include/dobby.h build/macos
+        tar -zcvf build/dobby-macos-all.tar.gz build/macos
+        cp build/dobby-macos-all.tar.gz artifact/
+        
+        
+      shell: bash
+    
+    - name: compile iphoneos
+      run: |
+        python3 scripts/platform_builder.py --platform=iphoneos --arch=all --cmake_dir=$HOME/opt/cmake-$CMAKE_VERSION/CMake.app/Contents
+        cp include/dobby.h build/iphoneos
+        tar -zcvf build/dobby-iphoneos-all.tar.gz build/iphoneos
+        cp build/dobby-iphoneos-all.tar.gz artifact/
+      shell: bash
+
+    - name: print output
+      run: |
+        ls -lha .
+
+    - name: update release
+      uses: ncipollo/release-action@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: latest
+        body: "a lightweight, multi-platform, multi-architecture exploit hook framework"
+        artifacts: "build/dobby-macos-all.tar.gz,build/dobby-iphoneos-all.tar.gz"
+        allowUpdates: true
+        replacesArtifacts: true
